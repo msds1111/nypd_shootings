@@ -1,0 +1,183 @@
+---
+title: "NYPD Shooting Incidents Analysis"
+author: "RWAUS"
+date: "2024-04-18"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(flextable)
+library(forcats)
+library(stringr)
+library(lubridate) 
+```
+
+## Introduction
+
+This document provides couple of analysis of NYPD Shooting Incident data obtained from cityofnewyork till year 2022. The analysis explores racial disparities among victims and the temporal patterns of shooting incidents across different boroughs.
+
+```{r load}
+shooting_data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv")
+```
+
+## Data Cleaning
+Remove records that does not have Victim Race
+
+```{r tidy-data}
+shooting_data <- shooting_data %>%
+  filter(!is.na(VIC_RACE))  # Remove rows where VIC_RACE is NA
+# Check for any NA dates
+sum(is.na(shooting_data$OCCUR_DATE))
+
+# View the range of dates
+range(shooting_data$OCCUR_DATE, na.rm = TRUE)
+```  
+
+## Summarize Data
+```{r summarize}
+glimpse(shooting_data)
+summary(shooting_data)
+```
+
+## Analysis 1: Proportional Distribution of Shooting Victims by Race Across Boroughs
+This analysis shows proportion of crime in each Borough based on the race of victim. This analysis aims to given an understanding of which race has the highest probability of falling victim to shooting incident in a borough.
+```{r analysis_1}
+# Borough code mapping
+boro_codes <- c("MN" = "Manhattan", "BX" = "Bronx", "BK" = "Brooklyn", "QN" = "Queens", "SI" = "Staten Island")
+
+# Create a data frame for borough codes
+boro_code_df <- data.frame(
+  Code = names(boro_codes),
+  Borough = boro_codes,
+  stringsAsFactors = FALSE
+)
+
+# Create a flextable
+boro_code_table <- flextable(boro_code_df)
+
+# Style the table
+boro_code_table <- boro_code_table %>%
+  set_table_properties(width = .4, layout = "autofit") %>%
+  theme_vanilla() %>%
+  align(align = "center", part = "all") %>%
+  bold(part = "header") %>%
+  color(part = "header", color = "white") %>%
+  bg(part = "header", bg = "#4CAF50")
+
+set_flextable_defaults(fonts_ignore=TRUE)
+
+victim_data <- shooting_data %>%
+  mutate(BORO = recode(BORO, !!!boro_codes),
+         VIC_RACE = str_trim(VIC_RACE),  
+         VIC_RACE = ifelse(str_detect(VIC_RACE, "^NA$"), "Unknown", VIC_RACE)) %>%  # Replace standalone 'NA' with 'Unknown'
+  count(BORO, VIC_RACE) %>%
+  group_by(BORO) %>%
+  mutate(proportion = n / sum(n) * 100)  # Calculate proportion
+
+# Display the table
+boro_code_table
+
+# Plotting
+ggplot(victim_data, aes(x = BORO, y = proportion, fill = VIC_RACE)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_x_discrete(labels = names(boro_codes)) +
+  labs(title = "Proportion of Shooting Victims by Race and Borough",
+       x = "Borough Code", y = "Proportion (%)", fill = "Race") +
+  scale_fill_brewer(palette = "Set3")
+```
+
+## Analysis 2: Proportion of Shooting Incidents by Time of Day Across Boroughs
+This analysis shows proportion of shooting broken in to different time of the day such as morning, afternoon, evening and late night for each Borough. This analysis aims to provide an understanding of safe hour windows for each of the borough.
+```{r analysis_2}
+# Ensure OCCUR_TIME is properly parsed as time
+shooting_data$OCCUR_TIME <- lubridate::hms(shooting_data$OCCUR_TIME)
+
+# Categorize time into Morning, Afternoon, Evening, and Late Night
+shooting_data$Time_Category <- dplyr::case_when(
+  lubridate::hour(shooting_data$OCCUR_TIME) >= 5 & lubridate::hour(shooting_data$OCCUR_TIME) < 11 ~ "Morning",
+  lubridate::hour(shooting_data$OCCUR_TIME) >= 11 & lubridate::hour(shooting_data$OCCUR_TIME) < 16 ~ "Afternoon",
+  lubridate::hour(shooting_data$OCCUR_TIME) >= 16 & lubridate::hour(shooting_data$OCCUR_TIME) < 21 ~ "Evening",
+  TRUE ~ "Late Night"
+)
+
+# Data preparation with aggregated count and proportion calculation within each borough
+time_data <- shooting_data %>%
+  group_by(BORO, Time_Category) %>%
+  summarise(Incidents = n(), .groups = "drop") %>%
+  group_by(BORO) %>%  # Regroup by BORO to ensure proportion is calculated within each borough
+  mutate(proportion = Incidents / sum(Incidents) * 100) %>%
+  ungroup()  # Remove grouping for further data manipulation or plotting
+
+# Plotting with a bar graph for visual clarity
+ggplot(time_data, aes(x = BORO, y = proportion, fill = Time_Category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_x_discrete(labels = names(boro_codes)) +
+  labs(title = "Proportion of Shooting Incidents by Time of Day and Borough",
+       x = "Borough Code", y = "Proportion (%)", fill = "Time of Day") +
+  theme_minimal()
+
+```
+
+## Analysis 3: Shooting Trends over the years based on time of the day for each borough
+This analysis shows shooting trends in each of the boroughs over the years for morning, afternoon, evening and late night hours. This analysis aims to provide an understanding of how safe/violent hours trend over the years.
+```{r analysis_3}
+
+# Ensure OCCUR_TIME and OCCUR_DATE are properly parsed
+# Parse OCCUR_DATE to date format if it's not already done
+shooting_data$OCCUR_DATE <- lubridate::mdy(shooting_data$OCCUR_DATE)  # Adjust based on your actual date format in the data
+
+# Filter out any dates not applicable for analysis
+shooting_data <- shooting_data %>%
+  filter(OCCUR_DATE > as.Date("2000-01-01") & OCCUR_DATE < as.Date("2024-01-01"))
+
+
+
+# Extract the year from the OCCUR_DATE for annual aggregation
+shooting_data$Year <- lubridate::year(shooting_data$OCCUR_DATE)
+
+# Summarize the number of incidents by Borough, Year, and Time_Period
+annual_data <- shooting_data %>%
+  group_by(BORO, Year, Time_Category) %>%
+  summarise(Annual_Incidents = n(), .groups = "drop")
+
+# Create a time series plot for each borough, displaying data for each time period
+boroughs <- unique(annual_data$BORO)
+plot_list <- list()
+
+for (boro in boroughs) {
+  borough_data <- filter(annual_data, BORO == boro)
+  p <- ggplot(borough_data, aes(x = Year, y = Annual_Incidents, color = Time_Category, group = Time_Category)) +
+    geom_line() +
+    scale_x_continuous(breaks = seq(min(annual_data$Year), max(annual_data$Year), by = 3)) +
+    labs(title = paste("Annual Trend of Shooting Incidents in", boro),
+         x = "Year", y = "Total Number of Incidents") +
+    scale_color_brewer(palette = "Set1") +
+    theme_minimal()
+  plot_list[[boro]] <- p
+}
+
+# Display all plots
+plot_list
+
+
+```
+
+## Bias Considerations
+Socio-economic factors drive motivations for a crime. Hence any analysis based solely on the race of the perpetrator without considering other factors could introduce a bias where a particular race seems more prone to crime. Hence that pattern of analysis has been avoided in the absence of more detailed socio-economic data such as income, education etc.
+
+
+## Conclusion
+1. Black and Black hispanic race forms the major proportion of victims in all Boroughs. In Bronx, almost all victims are Black. Staten Island has higher proportions of white victims compared to other Boroughs but black victims still form the highest proportion.
+2. Most shooting incidents happen at late night time (i.e. after 9 pm) in all the Boroughs. The distribution of shootings over morning, afternoon, evening and late night are proportionate across all the boroughs and gives a perspective of saftey hours.
+3. There was a downtrend in shooting from Year 2016 to 2019 but saw a sharp spike especially for evenings and late night hours during the pandemic (from 2020 onwards). This could be due to less patrolling of police out of pandemic concerns.  Bronx, Booklyn and Queens seems to have addressed the issue and starting to see a sharp downtrend from 2021 onwards. It remains a concern for Manhattan till 2022. Staten Island has seen overall reduction in shooting incidents. 
+
+
